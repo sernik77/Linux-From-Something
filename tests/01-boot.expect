@@ -1,0 +1,47 @@
+# Phase 1 acceptance: the machine boots its own kernel, runs its own init,
+# lands in its own zsh, and the core userland actually executes.
+TIMEOUT 90
+
+FAIL Kernel panic
+FAIL Attempted to kill init
+FAIL Unable to mount root
+
+EXPECT Linux version
+EXPECT init: Linux From Nothing starting
+EXPECT LFN-INIT-OK
+
+# --- the shell is alive and is really zsh -----------------------------------
+TIMEOUT 30
+SEND print -r -- "SHELL-IS $ZSH_NAME $ZSH_VERSION"
+EXPECT SHELL-IS zsh 5\.
+
+# --- coreutils --------------------------------------------------------------
+SEND uname -srm
+EXPECT Linux [0-9]+\.[0-9]+[^ ]* x86_64
+SEND ls /usr/bin | wc -l
+EXPECT ^[0-9]{2,}
+
+# --- the merged /usr symlink farm resolves ----------------------------------
+SEND test -x /bin/zsh && test -e /lib64/ld-linux-x86-64.so.2 && print MERGED-USR-OK
+EXPECT MERGED-USR-OK
+
+# --- proc, sys and devtmpfs are mounted -------------------------------------
+SEND grep -c . /proc/mounts
+EXPECT ^[0-9]+
+SEND test -e /dev/vda && test -d /sys/class && print DEVICES-OK
+EXPECT DEVICES-OK
+
+# --- the dynamic loader built its cache in the guest ------------------------
+SEND test -f /etc/ld.so.cache && print LDCACHE-OK
+EXPECT LDCACHE-OK
+
+# --- writing to the root filesystem works -----------------------------------
+SEND date > /root/boot-stamp && cat /root/boot-stamp && print WRITE-OK
+EXPECT WRITE-OK
+
+# --- util-linux -------------------------------------------------------------
+SEND dmesg | tail -1 >/dev/null && print DMESG-OK
+EXPECT DMESG-OK
+
+SEND print -r -- "PHASE1-COMPLETE"
+EXPECT PHASE1-COMPLETE

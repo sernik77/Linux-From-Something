@@ -1,0 +1,127 @@
+#!/usr/bin/env bash
+# lfn — build driver for "Linux From Nothing", Arch host edition.
+#
+#   ./lfn list                 show all stages and their state
+#   ./lfn build [stage...]     run stages (default: everything not yet stamped)
+#   ./lfn redo <stage>...      clear stamps and rebuild those stages
+#   ./lfn boot [--disk]        boot the guest interactively
+#   ./lfn test [name]          run an automated boot test
+#   ./lfn shell                open a host shell with the build env exported
+#   ./lfn status               summarise the tree
+#
+# Everything is idempotent: a finished stage leaves a stamp and is skipped.
+
+set -euo pipefail
+
+LFN_PROJ=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+export LFN_PROJ
+
+# Heavy, regenerable artefacts live next to the primary checkout rather than
+# inside it, so that a throw-away worktree never takes the build with it.
+if [[ -z ${LFN_WORK:-} ]]; then
+  if [[ $LFN_PROJ == */.claude/worktrees/* ]]; then
+    LFN_WORK="${LFN_PROJ%%/.claude/worktrees/*}/work"
+  else
+    LFN_WORK="$LFN_PROJ/work"
+  fi
+fi
+export LFN_WORK
+
+# shellcheck source=lfn.conf
+source "$LFN_PROJ/lfn.conf"
+export LFN SOURCES SRC BUILD OUT LOGS STAMPS FAKEROOT_STATE JOBS \
+       KEEP_BUILD_DIRS MIN_FREE_GB IMAGE_SIZE_MB IMAGE_LABEL \
+       QEMU_MEM QEMU_SMP QEMU_SSH_PORT KERNEL_GIT KERNEL_REF
+# versions
+while read -r v; do export "${v?}"; done < <(set -o posix; set | grep -E '^[A-Z0-9_]+_VER=' | cut -d= -f1)
+
+mkdir -p "$LFN_WORK" "$SOURCES" "$SRC" "$BUILD" "$OUT" "$LOGS" "$STAMPS"
+
+source "$LFN_PROJ/scripts/lib/common.sh"
+
+STAGE_DIR="$LFN_PROJ/scripts/stages"
+
+stage_files() { printf '%s\n' "$STAGE_DIR"/[0-9][0-9]-*.sh | sort; }
+stage_name()  { local b=${1##*/}; printf '%s\n' "${b%.sh}"; }
+
+resolve_stage() {           # accepts "15-glibc", "glibc" or "15"
+  local want=$1 f n
+  while read -r f; do
+    n=$(stage_name "$f")
+    [[ $n == "$want" || $n == *"-$want" || ${n%%-*} == "$want" ]] && { printf '%s\n' "$f"; return 0; }
+  done < <(stage_files)
+  return 1
+}
+
+run_stage() {
+  local f=$1 n; n=$(stage_name "$f")
+  if stamped "$n"; then ok "skip $n (done $(cat "$STAMPS/$n"))"; return 0; fi
+  msg "stage $n"
+  require_space
+  local log="$LOGS/$n.log"
+  local start=$SECONDS
+  if ( set -o pipefail; bash "$f" 2>&1 | tee "$log" ); then
+    # The disk images are a pure function of the tree, so they are never
+    # "done": any later stage that adds a package invalidates them.
+    [[ $n == *-image || $n == *-disk ]] || set_stamp "$n"
+    ok "$n finished in $((SECONDS-start))s  (log: ${log#$LFN_WORK/})"
+  else
+    die "$n failed after $((SECONDS-start))s — see $log"
+  fi
+}
+
+cmd_list() {
+  local f n
+  printf '%-28s %s\n' STAGE STATE
+  while read -r f; do
+    n=$(stage_name "$f")
+    if stamped "$n"; then printf '%-28s %sdone%s  %s\n' "$n" "$_c_green" "$_c_reset" "$(cat "$STAMPS/$n")"
+    else printf '%-28s pending\n' "$n"; fi
+  done < <(stage_files)
+}
+
+cmd_build() {
+  local f
+  if (($# == 0)); then
+    while read -r f; do run_stage "$f"; done < <(stage_files)
+  else
+    local want
+    for want in "$@"; do
+      f=$(resolve_stage "$want") || die "no such stage: $want"
+      run_stage "$f"
+    done
+  fi
+}
+
+cmd_redo() {
+  local want f n
+  (($#)) || die "redo needs a stage name"
+  for want in "$@"; do
+    f=$(resolve_stage "$want") || die "no such stage: $want"
+    n=$(stage_name "$f"); clear_stamp "$n"
+  done
+  cmd_build "$@"
+}
+
+cmd_status() {
+  printf 'project   %s\n' "$LFN_PROJ"
+  printf 'work dir  %s\n' "$LFN_WORK"
+  printf 'root tree %s  (%s, %s files)\n' "$LFN" \
+    "$(du -sh "$LFN" 2>/dev/null | cut -f1)" "$(find "$LFN" -type f 2>/dev/null | wc -l)"
+  printf 'free      %sG\n' "$(free_gb "$LFN_WORK")"
+  [[ -f $OUT/bzImage ]] && printf 'kernel    %s\n' "$(ls -lh "$OUT/bzImage" | awk '{print $5, $9}')"
+  [[ -f $OUT/rootfs.ext4 ]] && printf 'rootfs    %s\n' "$(ls -lh "$OUT/rootfs.ext4" | awk '{print $5, $9}')"
+  echo; cmd_list
+}
+
+case "${1:-build}" in
+  list)   shift; cmd_list "$@" ;;
+  build)  shift; cmd_build "$@" ;;
+  redo)   shift; cmd_redo "$@" ;;
+  status) shift; cmd_status "$@" ;;
+  boot)   shift; exec bash "$LFN_PROJ/scripts/boot.sh" "$@" ;;
+  test)   shift; exec bash "$LFN_PROJ/scripts/test.sh" "$@" ;;
+  shell)  shift; exec "${SHELL:-/bin/bash}" ;;
+  check)  shift; check_links "$@" && ok "all dynamic links resolve inside the tree" ;;
+  *) die "usage: lfn {list|build|redo|status|boot|test|check} ..." ;;
+esac

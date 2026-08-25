@@ -1,0 +1,55 @@
+# Phase 3 acceptance — the milestone the whole exercise is for.
+#
+# The guest compiles a program with its own compiler, then downloads an
+# upstream tarball and builds and installs it *on itself*, with no DESTDIR
+# and no host involvement.  After this passes, LFN is a self-hosting system.
+TIMEOUT 120
+
+FAIL Kernel panic
+FAIL Attempted to kill init
+
+EXPECT LFN-INIT-OK
+
+TIMEOUT 30
+SEND gcc --version | head -1
+EXPECT gcc \(GCC\) [0-9]+\.
+
+SEND make --version | head -1
+EXPECT GNU Make
+
+# --- compile and run something, inside the guest ---------------------------
+SEND print '#include <stdio.h>\n#include <sys/utsname.h>\nint main(void){struct utsname u;uname(&u);printf("SELFHOST-OK %s %s\\n",u.sysname,u.release);return 0;}' > /tmp/h.c
+SEND gcc -O2 -o /tmp/h /tmp/h.c && /tmp/h
+EXPECT SELFHOST-OK Linux [0-9]+\.
+
+# --- C++ too, which means libstdc++ really landed --------------------------
+SEND print '#include <iostream>\nint main(){std::cout<<"CXX-OK"<<std::endl;}' > /tmp/h.cc
+SEND g++ -O2 -o /tmp/hcc /tmp/h.cc && /tmp/hcc
+EXPECT CXX-OK
+
+# --- the real proof: fetch, configure, make, make install ------------------
+# Exactly the first self-hosted build the LFN notes ask for.
+TIMEOUT 300
+SEND cd /root && wget -q https://github.com/tukaani-project/xz/releases/download/v5.8.1/xz-5.8.1.tar.gz && print DOWNLOAD-OK
+EXPECT DOWNLOAD-OK
+
+SEND tar -xf xz-5.8.1.tar.gz && cd xz-5.8.1 && print UNPACK-OK
+EXPECT UNPACK-OK
+
+SEND ./configure --prefix=/usr/local --disable-nls >/tmp/cfg.log 2>&1 && print CONFIGURE-OK || tail -5 /tmp/cfg.log
+EXPECT CONFIGURE-OK
+
+SEND make -j2 >/tmp/make.log 2>&1 && print MAKE-OK || tail -20 /tmp/make.log
+EXPECT MAKE-OK
+
+SEND make install >/tmp/inst.log 2>&1 && print INSTALL-OK || tail -10 /tmp/inst.log
+EXPECT INSTALL-OK
+
+SEND /usr/local/bin/xz --version | head -1
+EXPECT xz \(XZ Utils\) 5\.8\.1
+
+SEND print hello | /usr/local/bin/xz -c | /usr/local/bin/xz -dc
+EXPECT ^hello
+
+SEND print -r -- "PHASE3-COMPLETE-SELF-HOSTING"
+EXPECT PHASE3-COMPLETE-SELF-HOSTING

@@ -1,0 +1,38 @@
+# Phase 2 acceptance: the guest configures its own interface, resolves names
+# and fetches something over TLS.
+#
+# Note what is NOT tested: ping.  QEMU's user-mode network does not forward
+# ICMP reliably, so a failed ping proves nothing and passes for nobody.
+TIMEOUT 90
+
+FAIL Kernel panic
+FAIL Attempted to kill init
+
+EXPECT LFN-INIT-OK
+
+TIMEOUT 30
+# --- the interface came up with the address init assigned ------------------
+SEND ip -brief addr show
+EXPECT 10\.0\.2\.15
+
+SEND ip route | grep -c default
+EXPECT ^1
+
+# --- the local resolver is listening ---------------------------------------
+SEND ss -lnu | grep -c ':53' || print NO-DNSMASQ
+EXPECT ^([1-9]|NO-DNSMASQ)
+
+# --- name resolution --------------------------------------------------------
+TIMEOUT 60
+SEND wget -q -O /tmp/dns-probe http://example.com/ && print HTTP-OK || print HTTP-FAIL
+EXPECT HTTP-OK
+
+# --- TLS, verified against the CA bundle installed with OpenSSL ------------
+SEND wget -q -O /tmp/tls-probe https://archlinux.org/ && print TLS-OK || print TLS-FAIL
+EXPECT TLS-OK
+
+SEND test -s /tmp/tls-probe && print -r -- "FETCHED $(wc -c < /tmp/tls-probe) bytes"
+EXPECT FETCHED [0-9]{3,}
+
+SEND print -r -- "PHASE2-COMPLETE"
+EXPECT PHASE2-COMPLETE
