@@ -1,6 +1,7 @@
 # Linux From Something
-> ## Arch Host Edition!
->
+> ### Arch Host Edition!
+> <img width="744" height="491" alt="image" src="https://github.com/user-attachments/assets/8192a8d7-c776-4ebb-81d0-04070ef02468" />
+
 > ***Watch on Asciinema.org***
 > [![asciicast](https://asciinema.org/a/1265310.svg)](https://asciinema.org/a/1265310)
  
